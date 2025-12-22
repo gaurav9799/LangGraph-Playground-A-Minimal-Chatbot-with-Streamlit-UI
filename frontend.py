@@ -11,19 +11,75 @@ The UI is intentionally lightweight and designed for rapid
 experimentation and local development rather than production deployment
 """
 
+import uuid
 import streamlit as st
 from langchain_core.messages import HumanMessage
 from langgraph_backend import chatbot
 
-CONFIG={
-    'configurable': {
-        'thread_id': 'thread-1'
-    }
-}
+def generate_thread_id():
+    """
+    Generates and return thread id
+    """
+    thread_id=uuid.uuid4()
+    return thread_id
 
+def reset_chat():
+    thread_id=generate_thread_id()
+    st.session_state['thread_id']=thread_id
+    add_thread(st.session_state['thread_id'])
+    st.session_state['message_history']=[]
+
+def add_thread(thread_id):
+    if thread_id not in st.session_state['chat_threads']:
+        st.session_state['chat_threads'].append(thread_id)
+
+def load_conversation(thread_id):
+    return chatbot.get_state(config={
+        'configurable': {'thread_id': thread_id}
+    }).values['messages']
+
+# ****************************************************** Session Setup ***************************************
 if 'message_history' not in st.session_state:
     st.session_state['message_history'] = []
 
+if 'thread_id' not in st.session_state:
+    st.session_state['thread_id']=generate_thread_id()
+
+if 'chat_threads' not in st.session_state:
+    st.session_state['chat_threads'] = []
+
+add_thread(st.session_state['thread_id'])
+
+CONFIG={
+    'configurable': {
+        'thread_id': st.session_state['thread_id']
+    }
+}
+
+# ****************************************** Sidebar UI **************************************************8
+st.sidebar.title('LangGraph Chatbot')
+
+if st.sidebar.button(label='New Chat'):
+    reset_chat()
+
+st.sidebar.header('My Conversations')
+
+for thread_id in st.session_state['chat_threads'][::-1]:
+    if st.sidebar.button(str(thread_id)):
+        st.session_state['thread_id']=thread_id
+        messages=load_conversation(thread_id=thread_id)
+
+        temp_messages=[]
+
+        for msg in messages:
+            if isinstance(msg, HumanMessage):
+                role='user'
+            else:
+                role='assistant'
+            temp_messages.append({'role': role, 'content': msg.content})
+        st.session_state['message_history']=temp_messages
+
+# **************************** Main UI ********************************************
 for message in st.session_state['message_history']:
     with st.chat_message(message['role']):
         st.text(message['content'])
