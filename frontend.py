@@ -14,7 +14,7 @@ experimentation and local development rather than production deployment
 import uuid
 import streamlit as st
 from langchain_core.messages import HumanMessage
-from langgraph_backend import chatbot
+from langgraph_backend import chatbot, retrieve_all_threads
 
 def generate_thread_id():
     """
@@ -45,7 +45,7 @@ if 'thread_id' not in st.session_state:
     st.session_state['thread_id']=generate_thread_id()
 
 if 'chat_threads' not in st.session_state:
-    st.session_state['chat_threads'] = []
+    st.session_state['chat_threads'] = retrieve_all_threads()
 
 add_thread(st.session_state['thread_id'])
 
