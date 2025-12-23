@@ -13,13 +13,13 @@ and experimentation rather than production use.
 
 import os
 from typing import TypedDict, Annotated
+import sqlite3
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph.message import add_messages
 from langchain_core.messages import BaseMessage
 from langchain_openai import AzureChatOpenAI
 from dotenv import load_dotenv
-import sqlite3
 
 load_dotenv()
 
