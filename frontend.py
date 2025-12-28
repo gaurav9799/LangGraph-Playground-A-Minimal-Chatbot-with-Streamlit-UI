@@ -52,7 +52,11 @@ add_thread(st.session_state['thread_id'])
 CONFIG={
     'configurable': {
         'thread_id': st.session_state['thread_id']
-    }
+    },
+    'metadata': {
+        'thread_id': st.session_state['thread_id']
+    },
+    'run_name': 'chat_run'
 }
 
 # ****************************************** Sidebar UI **************************************************8
