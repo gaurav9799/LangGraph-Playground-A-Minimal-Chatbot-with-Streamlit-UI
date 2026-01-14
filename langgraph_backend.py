@@ -11,26 +11,45 @@ The implementation is intentionally simple and designed for learning
 and experimentation rather than production use.
 """
 
-import os
-import requests
-from typing import TypedDict, Annotated
-import sqlite3
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.sqlite import SqliteSaver
+from typing import TypedDict, Annotated
+from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_openai import AzureChatOpenAI
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_community.tools import DuckDuckGoSearchRun
-from langchain_core.messages import BaseMessage
-from langchain_core.tools import tool
-from langchain_openai import AzureChatOpenAI
+from langchain_core.tools import tool, BaseTool
+from langchain_mcp_adapters.client import MultiServerMCPClient
 from dotenv import load_dotenv
+import aiosqlite
+import requests
+import asyncio
+import threading
+import os
 
 load_dotenv()
+
+_ASYNC_LOOP = asyncio.new_event_loop()
+_ASYNC_THREAD = threading.Thread(target=_ASYNC_LOOP.run_forever, daemon=True)
+_ASYNC_THREAD.start()
 
 api_key=os.getenv(key='AZURE_OPENAI_API_KEY')
 endpoint=os.getenv(key='AZURE_OPENAI_ENDPOINT')
 deployment_name=os.getenv('AZURE_OPENAI_DEPLOYMENT_NAME')
 api_version=os.getenv('AZURE_OPENAI_API_VERSION')
+
+def _submit_async(coro):
+    return asyncio.run_coroutine_threadsafe(coro, _ASYNC_LOOP)
+
+
+def run_async(coro):
+    return _submit_async(coro).result()
+
+
+def submit_async_task(coro):
+    """Schedule a coroutine on the backend event loop."""
+    return _submit_async(coro)
 
 llm = AzureChatOpenAI(
     azure_endpoint=endpoint,
@@ -40,29 +59,25 @@ llm = AzureChatOpenAI(
 )
 search_tool=DuckDuckGoSearchRun(region="us-en")
 
-@tool
-def calculator(first_num: float, second_num: float, operation: str) -> dict:
-    """
-    Perform a basic arithmetic operation on two numbers.
-    Supported operations: add, sub, mul, div
-    """
+client=MultiServerMCPClient(
+    {
+        "arith": {
+            "transport": "stdio",
+            "command": "C:/Users/GauravPurohit/miniconda3/envs/langraph_chatbot/python.exe",
+            "args": ["C:/Users/GauravPurohit/Desktop/Internal Projects/LangGraph-Playground-A-Minimal-Chatbot-with-Streamlit-UI/calculator-mcp-server/main.py"]
+        }
+    }
+)
+
+def load_mcp_tools() -> list[BaseTool]:
     try:
-        if operation == "add":
-            result = first_num + second_num
-        elif operation == "sub":
-            result = first_num - second_num
-        elif operation == "mul":
-            result = first_num * second_num
-        elif operation == "div":
-            if second_num == 0:
-                return {"error": "Division by zero is not allowed"}
-            result = first_num / second_num
-        else:
-            return {"error": f"Unsupported operation '{operation}'"}
-        
-        return {"first_num": first_num, "second_num": second_num, "operation": operation, "result": result}
+        return run_async(client.get_tools())
     except Exception as e:
-        return {"error": str(e)}
+        return []
+
+
+mcp_tools = load_mcp_tools()
+print(mcp_tools)
 
 @tool
 def get_stock_price(symbol: str) -> dict:
@@ -74,68 +89,64 @@ def get_stock_price(symbol: str) -> dict:
     r = requests.get(url)
     return r.json()
 
-tools=[calculator, search_tool, get_stock_price]
-llm_with_tools=llm.bind_tools(tools)
-class ChatState(TypedDict):
-    """
-    Represents the state of the chatbot within the LangGraph workflow.
+tools = [search_tool, get_stock_price, *mcp_tools]
+llm_with_tools = llm.bind_tools(tools)
 
-    Attributes:
-        messages (list[BaseMessage]):
-            A list of chat messages exchanged so far.
-            The `add_messages` annotation enables LangGraph to
-            automatically append new messages to the existing state
-            as the graph executes.
-    """
+# -------------------
+# 3. State
+# -------------------
+class ChatState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
-def chat_node(state: ChatState):
-    """
-     Core chat node responsible for generating the assistant response.
-
-    This function:
-    - Receives the current conversation state
-    - Extracts the accumulated chat messages
-    - Invokes the Azure OpenAI chat model with the full message history
-    - Returns the model's response in a format compatible with
-      LangGraph's message aggregation mechanism
-
-    Args:
-        state (ChatState): The current state of the conversation graph.
-
-    Returns:
-        dict:
-            A dictionary containing the newly generated assistant message,
-            which LangGraph merges into the existing message list.
-    """
-    messages = state['messages']
-    response = llm_with_tools.invoke(messages)
+# -------------------
+# 4. Nodes
+# -------------------
+async def chat_node(state: ChatState):
+    """LLM node that may answer or request a tool call."""
+    messages = state["messages"]
+    response = await llm_with_tools.ainvoke(messages)
     return {"messages": [response]}
 
-tool_node=ToolNode(tools)
 
-conn=sqlite3.connect(
-    database='chatbot.db',
-    check_same_thread=False
-)
+tool_node = ToolNode(tools) if tools else None
 
-checkpointer = SqliteSaver(conn=conn)
+# -------------------
+# 5. Checkpointer
+# -------------------
 
+
+async def _init_checkpointer():
+    conn = await aiosqlite.connect(database="chatbot.db")
+    return AsyncSqliteSaver(conn)
+
+
+checkpointer = run_async(_init_checkpointer())
+
+# -------------------
+# 6. Graph
+# -------------------
 graph = StateGraph(ChatState)
 graph.add_node("chat_node", chat_node)
-graph.add_node("tools", tool_node)
-
 graph.add_edge(START, "chat_node")
-graph.add_conditional_edges("chat_node", tools_condition)
-graph.add_edge('tools', 'chat_node')
 
-# graph.add_edge("chat_node", END)
+if tool_node:
+    graph.add_node("tools", tool_node)
+    graph.add_conditional_edges("chat_node", tools_condition)
+    graph.add_edge("tools", "chat_node")
+else:
+    graph.add_edge("chat_node", END)
 
 chatbot = graph.compile(checkpointer=checkpointer)
 
-def retrieve_all_threads():
-    all_threads=set()
-    for checkpoint in checkpointer.list(None):
-        all_threads.add(checkpoint.config['configurable']['thread_id'])
-
+# -------------------
+# 7. Helper
+# -------------------
+async def _alist_threads():
+    all_threads = set()
+    async for checkpoint in checkpointer.alist(None):
+        all_threads.add(checkpoint.config["configurable"]["thread_id"])
     return list(all_threads)
+
+
+def retrieve_all_threads():
+    return run_async(_alist_threads())
