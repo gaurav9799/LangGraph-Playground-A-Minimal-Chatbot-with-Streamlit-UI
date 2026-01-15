@@ -1,14 +1,5 @@
 """
 A minimal LangGraph-based chatbot implementation using Azure OpenAI.
-
-This module demonstrates how to:
-- Defanine a graph-based conversational workflow using LgGraph
-- Manage chat state via a TypedDict and message aggregation
-- Integrate Azure OpenAI as the LLM backend
-- Use an in-memory checkpointer for lightweight state persistence
-
-The implementation is intentionally simple and designed for learning
-and experimentation rather than production use.
 """
 
 from langgraph.graph import StateGraph, START, END
